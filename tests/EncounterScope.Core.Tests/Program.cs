@@ -7,7 +7,14 @@ var tests = new (string Name, Action Test)[]
 {
     ("duty gate handles observed, duplicate, disable, and re-enable transitions", TestDutyGate),
     ("combat clock resets each pull and ignores wall-clock jumps", TestCombatClock),
-    ("cast tracker reports transitions and mid-cast actors", TestCastTracker),
+    ("cast tracker reports starts, resolution completion, and mid-cast actors", TestCastTrackerBasics),
+    ("cast action changes cancel and replace the active occurrence", TestCastActionChange),
+    ("repeated cast IDs separated by idle frames create distinct occurrences", TestRepeatedCastAfterIdle),
+    ("cast source despawn cancels the active occurrence", TestCastSourceDespawn),
+    ("combat end and wipe cancel every active cast", TestCastBoundaryCleanup),
+    ("interruptible cast stops remain cancellations without authoritative evidence", TestCastApparentInterruption),
+    ("cast timer completion does not require an action resolution", TestCastTimerCompletion),
+    ("cast tracker handles many sequential actors", TestCastTrackerManyActors),
     ("bounded queues drop without exceeding capacity", TestBoundedQueue),
     ("duplicate labels preserve distinct action identities", TestDuplicateActionNames),
     ("writer emits required timestamps, ordered sequences, and privacy-safe JSONL", TestJsonlContract),
@@ -101,7 +108,7 @@ static void TestCombatClock()
     Assert(timeline.EndCombat("duplicate", context) is null);
 }
 
-static void TestCastTracker()
+static void TestCastTrackerBasics()
 {
     var tracker = new CastTracker();
     var idle = Cast(1, false, 0, 0);
@@ -113,39 +120,118 @@ static void TestCastTracker()
     Assert(!began.ObservedMidCast);
     Assert(Update(tracker, [Cast(1, true, 100, 1.5f)], 1.5).Count == 0);
 
-    var completed = Update(tracker, [idle], 2.6);
-    var timerEnd = Single<CastEnded>(completed);
-    Equal(1L, timerEnd.CastObservationId);
-    Equal(RecordTypes.CastCompleted, timerEnd.RecordType);
-    Equal("timer_elapsed", timerEnd.Reason);
-
-    var second = Single<CastBegan>(Update(tracker, [Cast(1, true, 101, 0.1f)], 3));
-    Equal(2L, second.CastObservationId);
-    var replacement = Update(tracker, [Cast(1, true, 102, 0.1f)], 3.2);
-    Equal(2, replacement.Count);
-    var replaced = (CastEnded)replacement[0];
-    var replacementStart = (CastBegan)replacement[1];
-    Equal(RecordTypes.CastCancelled, replaced.RecordType);
-    Equal("action_changed", replaced.Reason);
-    Equal(3L, replacementStart.CastObservationId);
-
-    var resolved = new HashSet<ResolvedCastKey> { new(1, 1, 102) };
-    var resolvedEnd = Single<CastEnded>(Update(tracker, [idle], 3.3, resolved));
+    var resolved = new HashSet<ResolvedCastKey> { new(1, 1, 100) };
+    var resolvedEnd = Single<CastEnded>(Update(tracker, [idle], 1.6, resolved));
+    Equal(1L, resolvedEnd.CastObservationId);
     Equal(RecordTypes.CastCompleted, resolvedEnd.RecordType);
     Equal("action_resolved", resolvedEnd.Reason);
 
-    var newActorMidCast = Single<CastBegan>(Update(tracker, [Cast(2, true, 200, 1.2f)], 4));
+    var newActorMidCast = Single<CastBegan>(Update(tracker, [Cast(2, true, 200, 1.2f)], 2));
     Assert(newActorMidCast.ObservedMidCast);
-    Assert(Update(tracker, [], 4.1, present: new HashSet<ulong> { 2 }).Count == 0);
+    Assert(Update(tracker, [], 2.1, present: new HashSet<ulong> { 2 }).Count == 0);
+}
+
+static void TestCastActionChange()
+{
+    var tracker = new CastTracker();
+    var original = Single<CastBegan>(Update(tracker, [Cast(1, true, 101, 0)], 1));
+    var replacement = Update(tracker, [Cast(1, true, 102, 0.2f)], 1.25);
+
+    Equal(2, replacement.Count);
+    var cancelled = (CastEnded)replacement[0];
+    var began = (CastBegan)replacement[1];
+    Equal(original.CastObservationId, cancelled.CastObservationId);
+    Equal(101u, cancelled.Snapshot.ActionId);
+    Equal(RecordTypes.CastCancelled, cancelled.RecordType);
+    Equal("action_changed", cancelled.Reason);
+    Equal(0.25d, cancelled.ObservedDurationSeconds);
+    Equal(original.CastObservationId + 1, began.CastObservationId);
+    Equal(102u, began.Snapshot.ActionId);
+}
+
+static void TestRepeatedCastAfterIdle()
+{
+    var tracker = new CastTracker();
+    var first = Single<CastBegan>(Update(tracker, [Cast(1, true, 300, 0)], 1));
+    var firstEnd = Single<CastEnded>(Update(tracker, [Cast(1, false, 0, 0)], 1.5));
+    var second = Single<CastBegan>(Update(tracker, [Cast(1, true, 300, 0)], 2));
+
+    Equal(first.CastObservationId, firstEnd.CastObservationId);
+    Equal(RecordTypes.CastCancelled, firstEnd.RecordType);
+    Equal("casting_stopped", firstEnd.Reason);
+    Equal(first.CastObservationId + 1, second.CastObservationId);
+    Equal(first.Snapshot.ActionId, second.Snapshot.ActionId);
+    Assert(!second.ObservedMidCast);
+}
+
+static void TestCastSourceDespawn()
+{
+    var tracker = new CastTracker();
+    var began = Single<CastBegan>(Update(tracker, [Cast(2, true, 200, 1.2f)], 4));
     var actorLost = Single<CastEnded>(Update(tracker, [], 4.2));
+
+    Equal(began.CastObservationId, actorLost.CastObservationId);
+    Equal(began.Snapshot, actorLost.Snapshot);
+    Equal(began.ObservedMidCast, actorLost.ObservedMidCast);
+    Assert(Math.Abs(actorLost.ObservedDurationSeconds - 0.2d) < 0.000_001);
     Equal(RecordTypes.CastCancelled, actorLost.RecordType);
     Equal("actor_lost", actorLost.Reason);
+}
 
-    var reappeared = Single<CastBegan>(Update(tracker, [Cast(2, true, 200, 1.2f)], 5));
-    Assert(reappeared.ObservedMidCast);
-    var cleanup = Single<CastEnded>(tracker.EndAll(5.1, "wipe"));
-    Equal("wipe", cleanup.Reason);
-    Assert(tracker.EndAll(5.2, "wipe").Count == 0);
+static void TestCastBoundaryCleanup()
+{
+    var tracker = new CastTracker();
+    var started = Update(tracker, [Cast(1, true, 400, 0), Cast(2, true, 401, 0)], 1);
+    var combatEnd = tracker.EndAll(1.5, "combat_end").Cast<CastEnded>().ToArray();
+
+    Equal(2, combatEnd.Length);
+    SequenceEqual(
+        started.Select(transition => transition.CastObservationId).Order().ToArray(),
+        combatEnd.Select(transition => transition.CastObservationId).Order().ToArray());
+    Assert(combatEnd.All(ended => ended.RecordType == RecordTypes.CastCancelled));
+    Assert(combatEnd.All(ended => ended.Reason == "combat_end"));
+    Assert(combatEnd.All(ended => ended.ObservedDurationSeconds == 0.5));
+
+    var wipeStart = Single<CastBegan>(Update(tracker, [Cast(3, true, 402, 0)], 2));
+    var wipe = Single<CastEnded>(tracker.EndAll(2.25, "wipe"));
+    Equal(wipeStart.CastObservationId, wipe.CastObservationId);
+    Equal(RecordTypes.CastCancelled, wipe.RecordType);
+    Equal("wipe", wipe.Reason);
+    Equal(0.25d, wipe.ObservedDurationSeconds);
+    Assert(tracker.EndAll(2.5, "wipe").Count == 0);
+}
+
+static void TestCastApparentInterruption()
+{
+    var tracker = new CastTracker();
+    var began = Single<CastBegan>(Update(tracker, [Cast(1, true, 500, 0)], 1));
+    Assert(began.Snapshot.Interruptible);
+
+    var ended = Single<CastEnded>(Update(tracker, [Cast(1, false, 0, 0)], 1.5));
+    Equal(began.CastObservationId, ended.CastObservationId);
+    Equal(RecordTypes.CastCancelled, ended.RecordType);
+    Assert(ended.RecordType != RecordTypes.CastInterrupted);
+    Equal("casting_stopped", ended.Reason);
+}
+
+static void TestCastTimerCompletion()
+{
+    var tracker = new CastTracker();
+    var snapshot = new VisibleCastSnapshot(1, true, 1, 600, 99, 0.5f, 2, 2.5f, true);
+    var began = Single<CastBegan>(Update(tracker, [snapshot], 1));
+    var ended = Single<CastEnded>(Update(tracker, [Cast(1, false, 0, 0)], 3));
+
+    Equal(began.CastObservationId, ended.CastObservationId);
+    Equal(snapshot, ended.Snapshot);
+    Equal(began.ObservedMidCast, ended.ObservedMidCast);
+    Equal(2d, ended.ObservedDurationSeconds);
+    Equal(RecordTypes.CastCompleted, ended.RecordType);
+    Equal("timer_elapsed", ended.Reason);
+}
+
+static void TestCastTrackerManyActors()
+{
+    var tracker = new CastTracker();
 
     for (var i = 0; i < 10_000; i++)
     {

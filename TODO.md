@@ -66,7 +66,7 @@ Schema changes require an explicit compatibility decision before implementation,
       reason.
 - [x] Distinguish completion without a visible action resolution from cancellation.
 - [x] Preserve `observedMidCast` semantics and avoid inventing a start time.
-- [ ] Test action changes during casting, repeated IDs separated by idle frames, source despawn,
+- [x] Test action changes during casting, repeated IDs separated by idle frames, source despawn,
       combat end, wipe, interruption, and completion without resolution.
 
 ## Priority 2: synchronized mechanic evidence

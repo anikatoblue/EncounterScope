@@ -112,11 +112,12 @@ dotnet format EncounterScope.slnx --verify-no-changes --no-restore
 ```
 
 Automated coverage must include duty lifecycle, monotonic clocks, multiple pulls, mid-cast
-discovery, bounded drops, JSONL shape and privacy, rotation, recovery, retention isolation, and
-capacity failure. In-game verification must cover settings and commands, enablement mid-duty,
-casted and instant actions, multiple targets, two pulls and a wipe, duty completion/exit, clean
-unload, unavailable hook behavior, writer failure, and actors whose native cast info is temporarily
-null.
+discovery, cast action replacement, repeated cast IDs, source loss, combat and wipe cleanup,
+conservative interruption classification, timer-only completion, bounded drops, JSONL shape and
+privacy, rotation, recovery, retention isolation, and capacity failure. In-game verification must
+cover settings and commands, enablement mid-duty, casted and instant actions, multiple targets, two
+pulls and a wipe, duty completion/exit, clean unload, unavailable hook behavior, writer failure, and
+actors whose native cast info is temporarily null.
 
 Before committing, verify `user.name`, `user.email`, `user.signingkey`, `gpg.format`, and
 `commit.gpgsign` from this repository as required by the parent guide. Any architectural,
