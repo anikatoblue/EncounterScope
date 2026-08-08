@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="src/EncounterScope.Core/EncounterScope.Core.csproj" />
+  <Project Path="src/EncounterScope/EncounterScope.csproj" />
+  <Project Path="tests/EncounterScope.Core.Tests/EncounterScope.Core.Tests.csproj" />
+</Solution>

@@ -1,0 +1,17 @@
+{
+  "Author": "Ani Kato",
+  "Name": "EncounterScope",
+  "InternalName": "EncounterScope",
+  "Description": "Records privacy-safe, timestamped JSONL encounter data from FFXIV duties.",
+  "Punchline": "Record encounter data for later analysis.",
+  "ApplicableVersion": "any",
+  "DalamudApiLevel": 15,
+  "Tags": ["utility", "analysis", "combat", "logging"],
+  "CategoryTags": ["utility"],
+  "LoadRequiredState": 0,
+  "LoadSync": false,
+  "CanUnloadAsync": false,
+  "LoadPriority": 0,
+  "IsTestingExclusive": false,
+  "AcceptsFeedback": false
+}
