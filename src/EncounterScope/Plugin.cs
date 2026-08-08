@@ -25,6 +25,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private readonly ICondition condition;
     private readonly IDutyState dutyState;
     private readonly IObjectTable objectTable;
+    private readonly IPartyList partyList;
     private readonly IPluginLog log;
     private readonly MetadataResolver metadata;
     private readonly CaptureStorage storage;
@@ -43,6 +44,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private long lastHealthRawDrops;
     private long lastHealthNormalizedDrops;
     private long lastHealthHookErrors;
+    private long lastHealthStatusDrops;
 
     public Plugin(
         IDalamudPluginInterface pluginInterface,
@@ -53,6 +55,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         ICondition condition,
         IDutyState dutyState,
         IObjectTable objectTable,
+        IPartyList partyList,
         IDataManager dataManager,
         IGameInteropProvider gameInteropProvider,
         IPluginLog log)
@@ -65,6 +68,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         this.condition = condition;
         this.dutyState = dutyState;
         this.objectTable = objectTable;
+        this.partyList = partyList;
         this.log = log;
 
         configuration = pluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
@@ -227,6 +231,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
             runtime?.Writer.SessionBytes ?? 0,
             rawQueue.Dropped,
             runtime?.NormalizedEventsDropped ?? 0,
+            runtime?.StatusEventsDropped ?? 0,
             Interlocked.Read(ref totalHookErrors),
             runtime?.Writer.Failure?.Message);
     }
@@ -238,7 +243,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         Print(
             $"hook={(status.HookAvailable ? "ready" : "unavailable")}; boundByDuty={status.DutyBound}; " +
             $"logging={(status.Enabled ? "on" : "off")}; {captureState}; bytes={status.SessionBytes}; " +
-            $"rawDrops={status.RawDrops}; normalizedDrops={status.NormalizedDrops}; " +
+            $"rawDrops={status.RawDrops}; normalizedDrops={status.NormalizedDrops}; statusDrops={status.StatusDrops}; " +
             $"hookErrors={status.HookErrors}; path={status.Path}" +
             (status.WriterError is null ? string.Empty : $"; writerError={status.WriterError}"));
     }
@@ -265,10 +270,11 @@ public sealed unsafe class Plugin : IDalamudPlugin
         if (runtime is not null)
         {
             runtime.Context.Update(clientState.TerritoryType, CurrentContentFinderConditionId());
-            objectFrame.Refresh(objectTable);
+            objectFrame.Refresh(objectTable, partyList);
             var actions = NormalizeRawActions(runtime, objectFrame);
             ProcessCaptureCasts(runtime, objectFrame, actions);
             PublishActions(runtime, actions);
+            ProcessCaptureStatuses(runtime, objectFrame);
             PublishHealthIfChanged(runtime);
 
             if (runtime.Writer.Failure is { } failure)
@@ -308,8 +314,9 @@ public sealed unsafe class Plugin : IDalamudPlugin
         }
         else
         {
-            objectFrame.Refresh(objectTable);
+            objectFrame.Refresh(objectTable, partyList);
             EndTrackedCasts(runtime, "combat_ended");
+            EndTrackedStatuses(runtime, "combat_ended");
             if (runtime.Timeline.EndCombat("condition_exit", runtime.Context.Snapshot) is { } ended)
                 runtime.Publish(ended);
         }
@@ -321,6 +328,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
             return;
 
         var previous = runtime.Context.Snapshot.TerritoryId;
+        EndTrackedStatuses(runtime, "territory_changed");
         runtime.Context.Update(territoryId, CurrentContentFinderConditionId());
         runtime.Publish(RecordTypes.TerritoryChanged, new TerritoryChangedPayload(previous, territoryId));
     }
@@ -333,8 +341,9 @@ public sealed unsafe class Plugin : IDalamudPlugin
         if (Volatile.Read(ref active) is not { } runtime)
             return;
 
-        objectFrame.Refresh(objectTable);
+        objectFrame.Refresh(objectTable, partyList);
         EndTrackedCasts(runtime, "wipe");
+        EndTrackedStatuses(runtime, "wipe");
         if (runtime.Timeline.EndCombat("wipe", runtime.Context.Snapshot) is { } ended)
             runtime.Publish(ended);
         runtime.Publish(RecordTypes.DutyMarker, new DutyMarkerPayload("wiped", "duty_state"));
@@ -399,6 +408,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         lastHealthRawDrops = 0;
         lastHealthNormalizedDrops = 0;
         lastHealthHookErrors = 0;
+        lastHealthStatusDrops = 0;
         Print($"Encounter logging started: {timeline.SessionId}. Files: {storage.DirectoryPath}");
     }
 
@@ -408,18 +418,26 @@ public sealed unsafe class Plugin : IDalamudPlugin
         if (runtime is null)
             return;
 
-        objectFrame.Refresh(objectTable);
+        objectFrame.Refresh(objectTable, partyList);
         var actions = NormalizeRawActions(runtime, objectFrame);
         ProcessCaptureCasts(runtime, objectFrame, actions);
         PublishActions(runtime, actions);
+        ProcessCaptureStatuses(runtime, objectFrame);
         EndTrackedCasts(runtime, reason);
+        EndTrackedStatuses(runtime, reason);
         if (runtime.Timeline.EndCombat(reason, runtime.Context.Snapshot) is { } ended)
             runtime.Publish(ended);
 
         runtime.Publish(
             RecordTypes.SessionEnd,
-            new SessionEndPayload(reason, runtime.RawEventsDropped, runtime.NormalizedEventsDropped, writerFailure));
+            new SessionEndPayload(
+                reason,
+                runtime.RawEventsDropped,
+                runtime.NormalizedEventsDropped,
+                runtime.StatusEventsDropped,
+                writerFailure));
         runtime.CastTracker.Clear();
+        runtime.StatusTracker.Clear();
         runtime.Writer.Complete();
         closingWriters.Add(runtime.Writer);
         Print($"Encounter logging stopped ({reason}). Session bytes queued/written: {runtime.Writer.SessionBytes}.");
@@ -511,6 +529,72 @@ public sealed unsafe class Plugin : IDalamudPlugin
         }
     }
 
+    private void ProcessCaptureStatuses(CaptureRuntime runtime, ObjectFrame frame)
+    {
+        var stamp = runtime.Timeline.Observe(runtime.Context.Snapshot);
+        var snapshots = frame.Statuses
+            .Select(status => status with
+            {
+                StackCount = metadata.ResolveStatusStackCount(status.StatusId, status.Parameter),
+            })
+            .ToArray();
+        PublishStatusTransitions(
+            runtime,
+            frame,
+            stamp,
+            runtime.StatusTracker.Update(snapshots, frame.PresentStatusActorIds, stamp.SessionElapsedSeconds));
+    }
+
+    private void EndTrackedStatuses(CaptureRuntime runtime, string reason)
+    {
+        var stamp = runtime.Timeline.Observe(runtime.Context.Snapshot);
+        PublishStatusTransitions(runtime, objectFrame, stamp, runtime.StatusTracker.EndAll(reason));
+    }
+
+    private void PublishStatusTransitions(
+        CaptureRuntime runtime,
+        ObjectFrame frame,
+        ObservationStamp stamp,
+        IReadOnlyList<StatusTransition> transitions)
+    {
+        var observedUtc = DateTimeOffset.Parse(
+            stamp.TimestampUtc,
+            System.Globalization.CultureInfo.InvariantCulture,
+            System.Globalization.DateTimeStyles.RoundtripKind);
+        foreach (var transition in transitions)
+        {
+            var snapshot = transition.Snapshot;
+            var sourceObject = frame.FindByEntityId(snapshot.SourceEntityId);
+            var source = metadata.ResolveActor(sourceObject, snapshot.SourceEntityId, snapshot.SourceEntityId);
+            var target = metadata.ResolveActor(
+                frame.FindByGameObjectId(snapshot.TargetGameObjectId),
+                snapshot.TargetGameObjectId);
+            var expirationUtc = transition.PredictedExpirationSeconds is { } expirationSeconds
+                ? TimestampFormatting.Utc(observedUtc.AddSeconds(expirationSeconds - stamp.SessionElapsedSeconds))
+                : null;
+            var payload = new StatusLifecyclePayload(
+                transition.StatusObservationId,
+                metadata.ResolveStatus(snapshot.StatusId),
+                source,
+                target,
+                snapshot.Parameter,
+                snapshot.StackCount,
+                snapshot.RemainingDurationSeconds,
+                expirationUtc,
+                transition.ObservedMidStatus,
+                transition is StatusUpdated updated ? updated.Changes : null,
+                transition is StatusRemoved removed ? removed.Reason : null);
+            var recordType = transition switch
+            {
+                StatusGained => RecordTypes.StatusGained,
+                StatusUpdated => RecordTypes.StatusUpdated,
+                StatusRemoved => RecordTypes.StatusRemoved,
+                _ => throw new InvalidOperationException("Unknown status transition."),
+            };
+            runtime.PublishStatus(ObservedGameEvent.From(stamp, recordType, payload));
+        }
+    }
+
     private List<NormalizedActionEffectObservation> NormalizeRawActions(CaptureRuntime runtime, ObjectFrame frame)
     {
         var actions = new List<NormalizedActionEffectObservation>();
@@ -559,9 +643,11 @@ public sealed unsafe class Plugin : IDalamudPlugin
         var rawDrops = runtime.RawEventsDropped;
         var normalizedDrops = runtime.NormalizedEventsDropped;
         var hookErrors = runtime.HookErrors;
+        var statusDrops = runtime.StatusEventsDropped;
         if (rawDrops == lastHealthRawDrops &&
             normalizedDrops == lastHealthNormalizedDrops &&
-            hookErrors == lastHealthHookErrors)
+            hookErrors == lastHealthHookErrors &&
+            statusDrops == lastHealthStatusDrops)
         {
             return;
         }
@@ -569,11 +655,13 @@ public sealed unsafe class Plugin : IDalamudPlugin
         lastHealthRawDrops = rawDrops;
         lastHealthNormalizedDrops = normalizedDrops;
         lastHealthHookErrors = hookErrors;
+        lastHealthStatusDrops = statusDrops;
         runtime.Publish(
             RecordTypes.Health,
             new HealthPayload(
                 rawDrops,
                 normalizedDrops,
+                statusDrops,
                 hookErrors,
                 runtime.Writer.SessionBytes,
                 "One or more capture events were dropped or rejected."));

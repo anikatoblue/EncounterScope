@@ -15,6 +15,9 @@ var tests = new (string Name, Action Test)[]
     ("interruptible cast stops remain cancellations without authoritative evidence", TestCastApparentInterruption),
     ("cast timer completion does not require an action resolution", TestCastTimerCompletion),
     ("cast tracker handles many sequential actors", TestCastTrackerManyActors),
+    ("status tracker reports lifecycle changes conservatively", TestStatusTrackerLifecycle),
+    ("status tracker preserves simultaneous sources and boundaries", TestStatusTrackerSourcesAndBoundaries),
+    ("status tracker deduplicates worst-case snapshots", TestStatusTrackerWorstCase),
     ("bounded queues drop without exceeding capacity", TestBoundedQueue),
     ("duplicate labels preserve distinct action identities", TestDuplicateActionNames),
     ("writer emits required timestamps, ordered sequences, and privacy-safe JSONL", TestJsonlContract),
@@ -260,6 +263,125 @@ static T Single<T>(IReadOnlyList<CastTransition> transitions) where T : CastTran
     return (T)transitions[0];
 }
 
+static void TestStatusTrackerLifecycle()
+{
+    var tracker = new StatusTracker();
+    var initial = Status(1, 0, 100, 10, 1, 10);
+    var gained = SingleStatus<StatusGained>(tracker.Update([initial], Set(1), 1));
+    Assert(gained.ObservedMidStatus);
+
+    Equal(0, tracker.Update([initial with { RemainingDurationSeconds = 9.8f }], Set(1), 1.2).Count);
+    var refreshed = SingleStatus<StatusUpdated>(
+        tracker.Update([initial with { RemainingDurationSeconds = 15, Parameter = 2, StackCount = 2 }], Set(1), 2));
+    Equal(gained.StatusObservationId, refreshed.StatusObservationId);
+    Assert(refreshed.Changes.Contains("refreshed"));
+    Assert(refreshed.Changes.Contains("parameter_changed"));
+    Assert(refreshed.Changes.Contains("stack_changed"));
+
+    var removed = SingleStatus<StatusRemoved>(tracker.Update([], Set(1), 3));
+    Equal("removed", removed.Reason);
+
+    var later = SingleStatus<StatusGained>(tracker.Update([initial with { RemainingDurationSeconds = 1 }], Set(1), 4));
+    Assert(!later.ObservedMidStatus);
+    var expired = SingleStatus<StatusRemoved>(tracker.Update([], Set(1), 5.4));
+    Equal("natural_expiration", expired.Reason);
+
+    var permanent = Status(1, 1, 101, 10, 0, 0);
+    _ = SingleStatus<StatusGained>(tracker.Update([permanent], Set(1), 6));
+    Equal(0, tracker.Update([permanent], Set(1), 20).Count);
+    Equal("removed", SingleStatus<StatusRemoved>(tracker.Update([], Set(1), 21)).Reason);
+}
+
+static void TestStatusTrackerSourcesAndBoundaries()
+{
+    var tracker = new StatusTracker();
+    var first = Status(1, 0, 200, 10, 0, 10);
+    var second = Status(1, 1, 200, 11, 0, 10);
+    var gains = tracker.Update([first, second], Set(1), 1).Cast<StatusGained>().ToArray();
+    Equal(2, gains.Length);
+    Assert(gains[0].StatusObservationId != gains[1].StatusObservationId);
+
+    var sourceChanged = SingleStatus<StatusUpdated>(
+        tracker.Update([first with { SourceEntityId = 12 }, second], Set(1), 1.1));
+    SequenceEqual(["source_changed"], sourceChanged.Changes);
+
+    var replaced = tracker.Update(
+        [first with { SourceEntityId = 12, StatusId = 201 }, second],
+        Set(1),
+        1.2);
+    Equal(2, replaced.Count);
+    Assert(replaced[0] is StatusRemoved { Reason: "replaced" });
+    Assert(replaced[1] is StatusGained { ObservedMidStatus: false });
+
+    var actorLost = tracker.Update([], new HashSet<ulong>(), 1.3).Cast<StatusRemoved>().ToArray();
+    Equal(2, actorLost.Length);
+    Assert(actorLost.All(status => status.Reason == "actor_lost"));
+
+    var reappeared = SingleStatus<StatusGained>(tracker.Update([first], Set(1), 1.4));
+    Assert(reappeared.ObservedMidStatus);
+    _ = tracker.Update([], new HashSet<ulong>(), 1.5);
+
+    _ = tracker.Update([Status(2, 0, 300, 20, 0, 10)], Set(2), 2);
+    var wipe = SingleStatus<StatusRemoved>(tracker.EndAll("wipe"));
+    Equal("wipe", wipe.Reason);
+    Equal(0, tracker.EndAll("wipe").Count);
+}
+
+static void TestStatusTrackerWorstCase()
+{
+    var tracker = new StatusTracker();
+    var actors = Enumerable.Range(1, 64).Select(value => (ulong)value).ToHashSet();
+    var snapshots = actors
+        .SelectMany(actor => Enumerable.Range(0, 30).Select(slot =>
+            Status(actor, slot, (uint)(1_000 + slot), 10, 0, 60)))
+        .ToArray();
+    var timer = System.Diagnostics.Stopwatch.StartNew();
+    Equal(snapshots.Length, tracker.Update(snapshots, actors, 0).Count);
+    for (var frame = 1; frame <= 1_000; frame++)
+    {
+        var remaining = 60 - frame / 60f;
+        var frameSnapshots = snapshots
+            .Select(status => status with { RemainingDurationSeconds = remaining })
+            .ToArray();
+        Equal(0, tracker.Update(frameSnapshots, actors, frame / 60d).Count);
+    }
+    timer.Stop();
+    var samplePayload = new StatusLifecyclePayload(
+        1,
+        new(1_000, "Synthetic Status"),
+        ActorReference.Unknown(10, 10),
+        ActorReference.Unknown(1, 1),
+        0,
+        null,
+        60,
+        "2026-08-08T00:01:00.0000000Z",
+        true,
+        null,
+        null);
+    var payloadBytes = Encoding.UTF8.GetByteCount(JsonSerializer.Serialize(samplePayload));
+    Console.WriteLine($"MEASURE status snapshots: {snapshots.Length * 1_001:N0} in {timer.Elapsed.TotalMilliseconds:N0} ms");
+    Console.WriteLine($"MEASURE status initial payloads: {snapshots.Length:N0} x {payloadBytes:N0} = {snapshots.Length * payloadBytes:N0} bytes");
+    Assert(timer.Elapsed < TimeSpan.FromSeconds(10));
+}
+
+static VisibleStatusSnapshot Status(
+    ulong target,
+    int slot,
+    uint statusId,
+    uint source,
+    ushort parameter,
+    float remaining) =>
+    new(target, slot, statusId, source, parameter, parameter == 0 ? null : (byte)parameter, remaining);
+
+static HashSet<ulong> Set(params ulong[] values) => values.ToHashSet();
+
+static T SingleStatus<T>(IReadOnlyList<StatusTransition> transitions) where T : StatusTransition
+{
+    Equal(1, transitions.Count);
+    Assert(transitions[0] is T);
+    return (T)transitions[0];
+}
+
 static void TestBoundedQueue()
 {
     var queue = new BoundedDropQueue<int>(2);
@@ -380,10 +502,29 @@ static void TestJsonlContract()
                 new(10, 11, 12)),
             [playerWithoutName]),
         context)));
+    Assert(writer.TryWrite(timeline.Create(
+        RecordTypes.StatusGained,
+        new StatusLifecyclePayload(
+            7,
+            new(123, "Test Status"),
+            npcSource,
+            playerWithoutName,
+            3,
+            3,
+            12.5f,
+            "2026-08-02T13:14:31.2350000Z",
+            true,
+            null,
+            null),
+        context)));
+    Assert(writer.TryWrite(timeline.Create(
+        RecordTypes.Health,
+        new HealthPayload(1, 2, 3, 4, 5, "test warning"),
+        context)));
     Assert(writer.TryWrite(timeline.EndCombat("condition_exit", context)!));
     Assert(writer.TryWrite(timeline.Create(
         RecordTypes.SessionEnd,
-        new SessionEndPayload("test", 0, 0, null),
+        new SessionEndPayload("test", 1, 2, 3, null),
         context)));
     Complete(writer);
 
@@ -393,7 +534,7 @@ static void TestJsonlContract()
     foreach (var document in documents)
     {
         var root = document.RootElement;
-        Equal(2, root.GetProperty("schemaVersion").GetInt32());
+        Equal(3, root.GetProperty("schemaVersion").GetInt32());
         Assert(!string.IsNullOrWhiteSpace(root.GetProperty("recordType").GetString()));
         Equal(timeline.SessionId, root.GetProperty("sessionId").GetString());
         var sequence = root.GetProperty("sequence").GetUInt64();
@@ -440,6 +581,23 @@ static void TestJsonlContract()
         2,
         resolved.RootElement.GetProperty("payload").GetProperty("header").GetProperty("animationVariation").GetByte());
 
+    var status = documents.Single(document =>
+        document.RootElement.GetProperty("recordType").GetString() == RecordTypes.StatusGained);
+    var statusPayload = status.RootElement.GetProperty("payload");
+    Equal(7L, statusPayload.GetProperty("statusObservationId").GetInt64());
+    Equal(123u, statusPayload.GetProperty("status").GetProperty("id").GetUInt32());
+    Equal(3, statusPayload.GetProperty("stackCount").GetByte());
+    Assert(statusPayload.GetProperty("observedMidStatus").GetBoolean());
+    Assert(!status.RootElement.GetRawText().Contains("Alice", StringComparison.Ordinal));
+    Assert(!status.RootElement.GetRawText().Contains("playerName", StringComparison.Ordinal));
+
+    var health = documents.Single(document =>
+        document.RootElement.GetProperty("recordType").GetString() == RecordTypes.Health);
+    Equal(3L, health.RootElement.GetProperty("payload").GetProperty("statusEventsDropped").GetInt64());
+    var sessionEnd = documents.Single(document =>
+        document.RootElement.GetProperty("recordType").GetString() == RecordTypes.SessionEnd);
+    Equal(3L, sessionEnd.RootElement.GetProperty("payload").GetProperty("statusEventsDropped").GetInt64());
+
     foreach (var document in documents)
         document.Dispose();
 }
@@ -469,7 +627,7 @@ static void TestRotation()
         clock.Advance(TimeSpan.FromMilliseconds(10));
         Assert(writer.TryWrite(timeline.Create(
             RecordTypes.Health,
-            new HealthPayload(i, i, i, i * 100, new string('x', 120)),
+            new HealthPayload(i, i, i, i, i * 100, new string('x', 120)),
             context)));
     }
     Complete(writer);

@@ -16,14 +16,16 @@ The capture records two complementary observation points:
 - `action_resolved` is the processed action-effect event. It covers cast completion, instant
   actions, helper actions, multi-target resolutions, and actions performed by actors whose cast was
   not visible.
+- `status_gained`, `status_updated`, and `status_removed` describe privacy-safe status snapshots on
+  encounter actors and party/alliance actors.
 
 Neither stream is a complete combat protocol. Captures intentionally omit raw per-target effect
 slots, player casts/actions, known player-owned pet actions, and player names. Action resolutions
 from unresolved sources remain present because hidden encounter helpers may not be in the live
-object table. The capture does not directly record statuses, tethers, icons, VFX paths, object
-spawn/despawn packets, model states, or authoritative AoE shapes. Loaded-object visibility limits
-what can be observed. Treat conclusions about unrecorded state as hypotheses requiring another
-source or an in-game check.
+object table. Loaded-object visibility limits status and actor observations. Tethers, icons, VFX
+paths, object spawn/despawn packets, model states, and authoritative AoE shapes remain outside the
+contract. Treat conclusions about unrecorded state as hypotheses requiring another source or an
+in-game check.
 
 ## JSONL structure
 
@@ -32,8 +34,8 @@ Every record has this envelope:
 
 | Field | Meaning |
 |---|---|
-| `schemaVersion` | Contract version for the entire record. Current captures are version 2; version 1 compatibility is not provided. |
-| `recordType` | Lifecycle, cast, resolution, health, or segment event. |
+| `schemaVersion` | Contract version for the entire record. Current captures are version 3; version 1 and 2 compatibility is not provided. |
+| `recordType` | Lifecycle, cast, resolution, status, health, or segment event. |
 | `sessionId` | Stable ID shared by all segments from one duty capture session. |
 | `sequence` | Monotonically increasing serialization order within the session. It may have gaps. |
 | `timestampUtc` | Observation-time UTC in round-trip ISO-8601 format. |
@@ -222,6 +224,43 @@ Do not automatically create warnings from every resolution-only ID. First determ
 an early, stable observation point or merely damage arriving after the player already needed to
 react.
 
+## Reading status lifecycle records
+
+Use `statusObservationId` to join one `status_gained` record to its `status_updated` and
+`status_removed` records. Numeric status ID is canonical; the fixed-English label may be null or
+ambiguous. Source and target actor references never include player names.
+
+`observedMidStatus=true` means the status was already present when its actor first became observable.
+The gain timestamp is therefore not an application timestamp. `remainingDurationSeconds` is the
+framework snapshot at the event, while `predictedExpirationTimestampUtc` is that duration projected
+from observation time. It is null for permanent or unknown-duration statuses and is never an
+authoritative server expiry.
+
+Updates list one or more changes: `refreshed`, `expiration_changed`, `source_changed`,
+`parameter_changed`, `stack_changed`, `expiration_observed`, or `expiration_unavailable`. Ordinary
+countdown snapshots are suppressed. Occurrences
+are tracked by target and status-list slot, so simultaneous copies of one status ID remain separate.
+A different status replacing the same slot produces a removal followed by a new gain.
+
+Removal reasons are conservative:
+
+- `natural_expiration` is used only when disappearance is observed within 0.5 seconds of the last
+  predicted expiration.
+- `removed` means an early disappearance whose cause is unknown; it is not proof of a cleanse.
+- `actor_lost` means the target left the observable actor set.
+- Lifecycle reasons such as `wipe`, `combat_ended`, `territory_changed`, and session-stop reasons
+  terminate all active occurrences at that boundary.
+
+Status coverage is limited to encounter Battle NPCs, members exposed through Dalamud's party list,
+and their battle-character pets. An absent record is not evidence that an unloaded or excluded
+actor lacked the status.
+
+The synthetic worst-case test uses 64 actors with 30 statuses each for 1,001 frames. On the
+development machine, 1,921,920 snapshots were diffed in 569 ms; the 1,920 initial gains were the
+only emitted transitions. A representative payload serialized to 589 bytes, or 1,130,880 bytes for
+that initial burst before the common JSONL envelope. Real storage depends on lifecycle churn, actor
+metadata size, and labels. Status records use the existing 100 MB rotation and 3 GB retention rules.
+
 ## Correlating casts and resolutions
 
 Use `castObservationId` as the foreign key between an observed cast start and terminal. Correlation
@@ -355,6 +394,7 @@ Inspect every `health` record plus `session_end` counters before claiming absenc
 
 - `rawEventsDropped` means observations were lost before normalization.
 - `normalizedEventsDropped` means events were lost before serialization.
+- `statusEventsDropped` is the subset of normalized losses belonging to status lifecycle records.
 - `hookErrors` indicates action-effect observation failures.
 - `warning` and writer failure state can explain a truncated session.
 

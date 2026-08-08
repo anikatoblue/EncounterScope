@@ -7,18 +7,53 @@ using Lumina.Excel;
 using Lumina.Excel.Sheets;
 using EncounterScope.Core;
 using GameActionType = FFXIVClientStructs.FFXIV.Client.Game.ActionType;
+using StatusSheet = Lumina.Excel.Sheets.Status;
 
 namespace EncounterScope;
 
 internal sealed class MetadataResolver
 {
+    private sealed record StatusMetadata(StatusReference Reference, byte MaxStacks);
+
     private readonly ExcelSheet<Lumina.Excel.Sheets.Action> actions;
     private readonly ExcelSheet<BNpcName> battleNpcNames;
+    private readonly ExcelSheet<StatusSheet> statuses;
+    private readonly Dictionary<uint, StatusMetadata> statusCache = [];
 
     public MetadataResolver(IDataManager dataManager)
     {
         actions = dataManager.GetExcelSheet<Lumina.Excel.Sheets.Action>(ClientLanguage.English);
         battleNpcNames = dataManager.GetExcelSheet<BNpcName>(ClientLanguage.English);
+        statuses = dataManager.GetExcelSheet<StatusSheet>(ClientLanguage.English);
+    }
+
+    public StatusReference ResolveStatus(uint statusId)
+        => GetStatusMetadata(statusId).Reference;
+
+    public byte? ResolveStatusStackCount(uint statusId, ushort parameter)
+    {
+        var maxStacks = GetStatusMetadata(statusId).MaxStacks;
+        return maxStacks == 0 ? null : (byte)Math.Min(parameter, maxStacks);
+    }
+
+    private StatusMetadata GetStatusMetadata(uint statusId)
+    {
+        if (statusCache.TryGetValue(statusId, out var cached))
+            return cached;
+
+        string? name = null;
+        byte maxStacks = 0;
+        if (statuses.TryGetRow(statusId, out var status))
+        {
+            var candidate = status.Name.ToString();
+            if (!string.IsNullOrWhiteSpace(candidate))
+                name = candidate;
+            maxStacks = status.MaxStacks;
+        }
+
+        var resolved = new StatusMetadata(new(statusId, name), maxStacks);
+        statusCache[statusId] = resolved;
+        return resolved;
     }
 
     public ActionReference ResolveAction(byte typeId, uint actionId)

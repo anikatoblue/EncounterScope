@@ -11,19 +11,32 @@ internal sealed unsafe class ObjectFrame
     private readonly Dictionary<ulong, IGameObject> byGameObjectId = [];
     private readonly Dictionary<uint, IGameObject> byEntityId = [];
     private readonly List<VisibleCastSnapshot> casts = [];
+    private readonly List<VisibleStatusSnapshot> statuses = [];
     private readonly HashSet<ulong> presentBattleActorIds = [];
+    private readonly HashSet<ulong> presentStatusActorIds = [];
     private readonly List<IBattleChara> battleActors = [];
 
     public IReadOnlyList<VisibleCastSnapshot> Casts => casts;
+    public IReadOnlyList<VisibleStatusSnapshot> Statuses => statuses;
     public IReadOnlySet<ulong> PresentBattleActorIds => presentBattleActorIds;
+    public IReadOnlySet<ulong> PresentStatusActorIds => presentStatusActorIds;
 
-    public void Refresh(IObjectTable objectTable)
+    public void Refresh(IObjectTable objectTable, IPartyList partyList)
     {
         byGameObjectId.Clear();
         byEntityId.Clear();
         casts.Clear();
+        statuses.Clear();
         presentBattleActorIds.Clear();
+        presentStatusActorIds.Clear();
         battleActors.Clear();
+
+        var partyEntityIds = new HashSet<uint>();
+        foreach (var member in partyList)
+        {
+            if (member.EntityId != 0)
+                partyEntityIds.Add(member.EntityId);
+        }
 
         foreach (var gameObject in objectTable)
         {
@@ -40,6 +53,27 @@ internal sealed unsafe class ObjectFrame
 
         foreach (var battleChara in battleActors)
         {
+            if (IsStatusActor(battleChara, partyEntityIds))
+            {
+                presentStatusActorIds.Add(battleChara.GameObjectId);
+                var statusList = battleChara.StatusList;
+                for (var slot = 0; slot < statusList.Length; slot++)
+                {
+                    var status = statusList[slot];
+                    if (status is null || status.StatusId == 0)
+                        continue;
+
+                    statuses.Add(new(
+                        battleChara.GameObjectId,
+                        slot,
+                        status.StatusId,
+                        status.SourceId,
+                        status.Param,
+                        null,
+                        status.RemainingTime));
+                }
+            }
+
             if (!IsEncounterActor(battleChara))
                 continue;
 
@@ -66,6 +100,17 @@ internal sealed unsafe class ObjectFrame
                 castInfo->TotalCastTime,
                 castInfo->Interruptible));
         }
+    }
+
+    private bool IsStatusActor(IBattleChara battleChara, IReadOnlySet<uint> partyEntityIds)
+    {
+        if (IsEncounterActor(battleChara))
+            return true;
+
+        if (battleChara.ObjectKind == ObjectKind.Pc)
+            return partyEntityIds.Contains(battleChara.EntityId);
+
+        return battleChara.OwnerId != 0 && partyEntityIds.Contains(battleChara.OwnerId);
     }
 
     public IGameObject? FindByGameObjectId(ulong id) => byGameObjectId.GetValueOrDefault(id);

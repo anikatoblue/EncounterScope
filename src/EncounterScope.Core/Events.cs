@@ -13,6 +13,9 @@ public static class RecordTypes
     public const string CastCancelled = "cast_cancelled";
     public const string CastInterrupted = "cast_interrupted";
     public const string ActionResolved = "action_resolved";
+    public const string StatusGained = "status_gained";
+    public const string StatusUpdated = "status_updated";
+    public const string StatusRemoved = "status_removed";
     public const string Health = "health";
     public const string SegmentEnd = "segment_end";
     public const string SessionEnd = "session_end";
@@ -42,7 +45,7 @@ public sealed record ObservedGameEvent(
     uint? ContentFinderConditionId,
     object Payload)
 {
-    public const int CurrentSchemaVersion = 2;
+    public const int CurrentSchemaVersion = 3;
 
     public static ObservedGameEvent From(ObservationStamp stamp, string recordType, object payload) =>
         new(
@@ -105,6 +108,7 @@ public sealed record SessionEndPayload(
     string Reason,
     long RawEventsDropped,
     long NormalizedEventsDropped,
+    long StatusEventsDropped,
     string? WriterFailure);
 
 public sealed record SegmentBoundaryPayload(int SegmentIndex, string FileName);
@@ -160,9 +164,25 @@ public sealed record ActionResolvedPayload(
     ActionEffectHeaderReference Header,
     IReadOnlyList<ActorReference> Targets);
 
+public sealed record StatusReference(uint Id, string? Name);
+
+public sealed record StatusLifecyclePayload(
+    long StatusObservationId,
+    StatusReference Status,
+    ActorReference Source,
+    ActorReference Target,
+    ushort Parameter,
+    byte? StackCount,
+    float RemainingDurationSeconds,
+    string? PredictedExpirationTimestampUtc,
+    bool ObservedMidStatus,
+    IReadOnlyList<string>? Changes,
+    string? Reason);
+
 public sealed record HealthPayload(
     long RawEventsDropped,
     long NormalizedEventsDropped,
+    long StatusEventsDropped,
     long HookErrors,
     long SessionBytes,
     string? Warning);

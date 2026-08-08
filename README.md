@@ -28,10 +28,10 @@ Files use the name
 or failed files become `.incomplete.jsonl`. Files rotate around 100 MB, and retention is limited to
 3 GB of EncounterScope-owned completed sessions. Files owned by other applications are never managed.
 
-The JSONL contract uses schema version 2, with no version 1 output or migration path. Records include
+The JSONL contract uses schema version 3, with no version 1 or 2 output or migration path. Records include
 session and combat timing, territory and Content Finder context, cast starts and terminal states,
-processed action resolutions, duty and combat lifecycle markers, health records, and segment
-boundaries.
+processed action resolutions, status lifecycle changes, duty and combat lifecycle markers, health
+records, and segment boundaries.
 
 Every observed cast occurrence receives a session-local `castObservationId` carried from
 `cast_started` to `cast_completed` or `cast_cancelled`. Completion requires elapsed-timer evidence
@@ -42,6 +42,13 @@ is not inferred merely because an interruptible cast stopped.
 Cast scanning is limited to encounter Battle NPCs. Processed actions from known players and
 player-owned pets are omitted; actions from unresolved sources remain available because hidden
 boss/helper actors may not be represented in the live object table.
+
+Status scanning covers encounter Battle NPCs, party/alliance characters exposed through Dalamud's
+party list, and battle-character pets owned by those members. Each status occurrence receives a
+session-local `statusObservationId`. Ordinary duration countdown is deduplicated; refreshes,
+parameter/stack changes, source changes, and removals produce lifecycle records. A removal is called
+`natural_expiration` only when observed within 0.5 seconds of the predicted expiration. Early
+disappearance remains `removed`, because snapshot polling cannot prove a cleanse.
 
 ## Privacy and limitations
 

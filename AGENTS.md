@@ -19,7 +19,7 @@ be explicitly requested.
 ## Layout and data flow
 
 - `src/EncounterScope.Core` contains clocks, event contracts, duty and combat lifecycle state,
-  cast tracking, bounded queues, JSONL writing, recovery, rotation, and retention.
+  cast and status tracking, bounded queues, JSONL writing, recovery, rotation, and retention.
 - `src/EncounterScope` contains `Plugin`, Dalamud adapters, the processed-action detour, actor and
   action metadata resolution, configuration, commands, and the settings/status window.
 - `tests/EncounterScope.Core.Tests` is a dependency-free executable test harness.
@@ -44,6 +44,13 @@ sources remain captured because hidden encounter helpers may not be present in t
 Processed actions are normalized before cast transitions in the same framework update so exact
 source and numeric action identity can provide completion evidence without delaying events.
 
+Status snapshots cover encounter Battle NPCs, party/alliance actors exposed by `IPartyList`, and
+their battle-character pets. They are diffed by target and status-list slot. Countdown-only changes
+are suppressed; source, parameter, stack, and predicted-expiration changes are retained. Statuses
+first seen with an actor are marked `observedMidStatus`. Natural expiration is reported only within
+0.5 seconds of predicted expiry; other early removals stay conservative. Combat, wipe, territory,
+and session boundaries terminate active status occurrences.
+
 The `ActionEffectHandler.Receive` detour snapshots the already-unscrambled action identity, header,
 target IDs, and observation-time capture context into a bounded queue. It must call the original
 exactly once in `finally`; exceptions must not escape. Never perform metadata lookup, file I/O,
@@ -52,10 +59,11 @@ normalized events to one background writer.
 
 ## Capture contract and privacy
 
-JSONL uses `schemaVersion: 2`; version 1 output and migration are not supported. Supported record
+JSONL uses `schemaVersion: 3`; version 1 and 2 output and migration are not supported. Supported record
 types are `session_start`, `segment_start`, `duty_marker`, `territory_changed`, `combat_started`,
 `combat_ended`, `cast_started`, `cast_completed`, `cast_cancelled`, `cast_interrupted`,
-`action_resolved`, `health`, `segment_end`, and `session_end`. Common fields include session ID,
+`action_resolved`, `status_gained`, `status_updated`, `status_removed`, `health`, `segment_end`, and
+`session_end`. Common fields include session ID,
 serialized sequence, observation-time UTC, monotonic session/combat seconds, combat ID, territory,
 Content Finder condition, and a camel-case payload.
 

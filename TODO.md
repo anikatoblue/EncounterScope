@@ -13,15 +13,15 @@ Schema changes require an explicit compatibility decision before implementation,
 
 ### Status lifecycle
 
-- [ ] Add `status_gained`, `status_updated`, and `status_removed` records.
-- [ ] Record numeric status ID and an optional fixed-English label.
-- [ ] Record source and target actor references without player names.
-- [ ] Record stack count, duration, observed expiration time, and status parameter when available.
-- [ ] Distinguish refresh, stack change, source change, natural expiration, cleanse, and actor loss
+- [x] Add `status_gained`, `status_updated`, and `status_removed` records.
+- [x] Record numeric status ID and an optional fixed-English label.
+- [x] Record source and target actor references without player names.
+- [x] Record stack count, duration, observed expiration time, and status parameter when available.
+- [x] Distinguish refresh, stack change, source change, natural expiration, cleanse, and actor loss
       when that distinction is reliable.
-- [ ] Mark statuses first observed in progress so their true application time is not fabricated.
-- [ ] Deduplicate unchanged framework snapshots without hiding real refreshes or stack changes.
-- [ ] Test gain, refresh, stack changes, removal, mid-status discovery, actor disappearance, and
+- [x] Mark statuses first observed in progress so their true application time is not fabricated.
+- [x] Deduplicate unchanged framework snapshots without hiding real refreshes or stack changes.
+- [x] Test gain, refresh, stack changes, removal, mid-status discovery, actor disappearance, and
       multiple sources applying the same status ID.
 
 ### Tether lifecycle

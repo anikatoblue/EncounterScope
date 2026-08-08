@@ -11,6 +11,7 @@ internal sealed record CaptureStatusSnapshot(
     long SessionBytes,
     long RawDrops,
     long NormalizedDrops,
+    long StatusDrops,
     long HookErrors,
     string? WriterError);
 
@@ -52,6 +53,7 @@ internal sealed class SettingsWindow(
         ImGui.TextUnformatted($"Session bytes: {status.SessionBytes:N0}");
         ImGui.TextUnformatted(
             $"Dropped events: raw {status.RawDrops:N0}, normalized {status.NormalizedDrops:N0}");
+        ImGui.TextUnformatted($"Dropped status events: {status.StatusDrops:N0}");
         ImGui.TextUnformatted($"Hook errors: {status.HookErrors:N0}");
         ImGui.TextWrapped($"Path: {status.Path}");
         if (status.WriterError is not null)
