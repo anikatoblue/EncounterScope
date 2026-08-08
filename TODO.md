@@ -59,13 +59,13 @@ Schema changes require an explicit compatibility decision before implementation,
 
 ### Cast lifecycle completion
 
-- [ ] Add `cast_completed`, `cast_cancelled`, and `cast_interrupted` records.
-- [ ] Give every observed cast occurrence a stable capture-local `castObservationId`.
-- [ ] Carry the cast occurrence ID from start through its terminal event.
-- [ ] Record end time, elapsed cast time, source, target, action identity, and reliable termination
+- [x] Add `cast_completed`, `cast_cancelled`, and reserved `cast_interrupted` records.
+- [x] Give every observed cast occurrence a stable capture-local `castObservationId`.
+- [x] Carry the cast occurrence ID from start through its terminal event.
+- [x] Record end time, observed elapsed time, source, target, action identity, and reliable termination
       reason.
-- [ ] Distinguish completion without a visible action resolution from cancellation.
-- [ ] Preserve `observedMidCast` semantics and avoid inventing a start time.
+- [x] Distinguish completion without a visible action resolution from cancellation.
+- [x] Preserve `observedMidCast` semantics and avoid inventing a start time.
 - [ ] Test action changes during casting, repeated IDs separated by idle frames, source despawn,
       combat end, wipe, interruption, and completion without resolution.
 

@@ -28,9 +28,20 @@ Files use the name
 or failed files become `.incomplete.jsonl`. Files rotate around 100 MB, and retention is limited to
 3 GB of EncounterScope-owned completed sessions. Files owned by other applications are never managed.
 
-The JSONL contract uses schema version 1. Records include session and combat timing, territory and
-Content Finder context, casts, processed action resolutions, duty and combat lifecycle markers,
-health records, and segment boundaries.
+The JSONL contract uses schema version 2, with no version 1 output or migration path. Records include
+session and combat timing, territory and Content Finder context, cast starts and terminal states,
+processed action resolutions, duty and combat lifecycle markers, health records, and segment
+boundaries.
+
+Every observed cast occurrence receives a session-local `castObservationId` carried from
+`cast_started` to `cast_completed` or `cast_cancelled`. Completion requires elapsed-timer evidence
+or an exact same-framework-frame source/action match with `action_resolved`; other observed endings
+record a cancellation reason. `cast_interrupted` is reserved for a future authoritative signal and
+is not inferred merely because an interruptible cast stopped.
+
+Cast scanning is limited to encounter Battle NPCs. Processed actions from known players and
+player-owned pets are omitted; actions from unresolved sources remain available because hidden
+boss/helper actors may not be represented in the live object table.
 
 ## Privacy and limitations
 

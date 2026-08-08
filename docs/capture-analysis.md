@@ -10,12 +10,17 @@ The capture records two complementary observation points:
 
 - `cast_started` is a visible actor beginning a cast. It is normally the best source for an early
   warning, cast duration, target, and interruptibility.
+- `cast_completed` and `cast_cancelled` terminate an observed cast occurrence. Their
+  `castObservationId` links them to `cast_started`; `cast_interrupted` is reserved for a future
+  authoritative interruption signal and is not currently inferred.
 - `action_resolved` is the processed action-effect event. It covers cast completion, instant
   actions, helper actions, multi-target resolutions, and actions performed by actors whose cast was
   not visible.
 
 Neither stream is a complete combat protocol. Captures intentionally omit raw per-target effect
-slots and player names. They do not directly record statuses, tethers, icons, VFX paths, object
+slots, player casts/actions, known player-owned pet actions, and player names. Action resolutions
+from unresolved sources remain present because hidden encounter helpers may not be in the live
+object table. The capture does not directly record statuses, tethers, icons, VFX paths, object
 spawn/despawn packets, model states, or authoritative AoE shapes. Loaded-object visibility limits
 what can be observed. Treat conclusions about unrecorded state as hypotheses requiring another
 source or an in-game check.
@@ -27,7 +32,7 @@ Every record has this envelope:
 
 | Field | Meaning |
 |---|---|
-| `schemaVersion` | Contract version for the entire record. Validate before interpreting payloads. |
+| `schemaVersion` | Contract version for the entire record. Current captures are version 2; version 1 compatibility is not provided. |
 | `recordType` | Lifecycle, cast, resolution, health, or segment event. |
 | `sessionId` | Stable ID shared by all segments from one duty capture session. |
 | `sequence` | Monotonically increasing serialization order within the session. It may have gaps. |
@@ -149,6 +154,7 @@ from another source when producing privacy-safe encounter artifacts.
 
 The payload contains:
 
+- session-local `castObservationId`;
 - normalized action identity;
 - source and optional target snapshots;
 - `currentCastSeconds`, `baseCastSeconds`, and `totalCastSeconds`;
@@ -167,6 +173,24 @@ useful, and the remaining cast can still be correlated with its resolution.
 A cast can be absent because it was instant, too short for a framework scan, performed while the
 source was not loaded, or exposed during a transient native state without cast information. Absence
 of `cast_started` does not imply absence of an action.
+
+## Reading cast terminal events
+
+`cast_completed` and `cast_cancelled` carry the same `castObservationId`, action, source, target,
+and `observedMidCast` state as their start. They also record `observedDurationSeconds`, the last
+observed current/base/total cast values, and a machine-readable `reason`. The record envelope's
+timestamp and monotonic context are the observed end time.
+
+Completion is conservative. `reason=action_resolved` means an action resolution from the exact
+source instance and numeric action identity was normalized in the same framework update.
+`reason=timer_elapsed` means the cast's observed progress reached its calculated end even without a
+visible resolution. Cancellation reasons describe the observation that ended tracking, such as
+`casting_stopped`, `action_changed`, `actor_lost`, `combat_ended`, or `wipe`.
+
+Do not interpret `cast_cancelled` as proof of player interruption. EncounterScope currently has no
+authoritative interruption input, and being marked interruptible does not establish why a cast
+ended. Likewise, `observedDurationSeconds` measures only the captured portion of the occurrence;
+for `observedMidCast=true`, it must not be used to reconstruct an exact start time.
 
 ## Reading `action_resolved`
 
@@ -200,7 +224,10 @@ react.
 
 ## Correlating casts and resolutions
 
-Correlation is evidence-based rather than a guaranteed foreign key. Start with:
+Use `castObservationId` as the foreign key between an observed cast start and terminal. Correlation
+between a cast occurrence and arbitrary `action_resolved` records remains evidence-based; only the
+same-frame exact match represented by `reason=action_resolved` is classified directly. For broader
+correlation, start with:
 
 1. Same combat and mechanic window.
 2. Same `(typeId, actionId)` when the cast resolves under its own ID.
@@ -397,7 +424,12 @@ known player/pet object kinds and class/job context after inspecting the data.
 ```powershell
 [IO.File]::ReadLines($capturePath) |
     ForEach-Object { $_ | ConvertFrom-Json } |
-    Where-Object { $_.recordType -in @('cast_started', 'action_resolved') } |
+    Where-Object {
+        $_.recordType -in @(
+            'cast_started', 'cast_completed', 'cast_cancelled', 'cast_interrupted',
+            'action_resolved'
+        )
+    } |
     Group-Object {
         '{0}|{1}|{2}' -f
             $_.recordType,

@@ -266,8 +266,9 @@ public sealed unsafe class Plugin : IDalamudPlugin
         {
             runtime.Context.Update(clientState.TerritoryType, CurrentContentFinderConditionId());
             objectFrame.Refresh(objectTable);
-            ProcessCaptureCasts(runtime, objectFrame);
-            DrainRawActions(runtime, objectFrame);
+            var actions = NormalizeRawActions(runtime, objectFrame);
+            ProcessCaptureCasts(runtime, objectFrame, actions);
+            PublishActions(runtime, actions);
             PublishHealthIfChanged(runtime);
 
             if (runtime.Writer.Failure is { } failure)
@@ -305,9 +306,12 @@ public sealed unsafe class Plugin : IDalamudPlugin
             if (runtime.Timeline.StartCombat("condition_enter", false, runtime.Context.Snapshot) is { } started)
                 runtime.Publish(started);
         }
-        else if (runtime.Timeline.EndCombat("condition_exit", runtime.Context.Snapshot) is { } ended)
+        else
         {
-            runtime.Publish(ended);
+            objectFrame.Refresh(objectTable);
+            EndTrackedCasts(runtime, "combat_ended");
+            if (runtime.Timeline.EndCombat("condition_exit", runtime.Context.Snapshot) is { } ended)
+                runtime.Publish(ended);
         }
     }
 
@@ -329,6 +333,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
         if (Volatile.Read(ref active) is not { } runtime)
             return;
 
+        objectFrame.Refresh(objectTable);
+        EndTrackedCasts(runtime, "wipe");
         if (runtime.Timeline.EndCombat("wipe", runtime.Context.Snapshot) is { } ended)
             runtime.Publish(ended);
         runtime.Publish(RecordTypes.DutyMarker, new DutyMarkerPayload("wiped", "duty_state"));
@@ -403,7 +409,10 @@ public sealed unsafe class Plugin : IDalamudPlugin
             return;
 
         objectFrame.Refresh(objectTable);
-        DrainRawActions(runtime, objectFrame);
+        var actions = NormalizeRawActions(runtime, objectFrame);
+        ProcessCaptureCasts(runtime, objectFrame, actions);
+        PublishActions(runtime, actions);
+        EndTrackedCasts(runtime, reason);
         if (runtime.Timeline.EndCombat(reason, runtime.Context.Snapshot) is { } ended)
             runtime.Publish(ended);
 
@@ -416,10 +425,22 @@ public sealed unsafe class Plugin : IDalamudPlugin
         Print($"Encounter logging stopped ({reason}). Session bytes queued/written: {runtime.Writer.SessionBytes}.");
     }
 
-    private void ProcessCaptureCasts(CaptureRuntime runtime, ObjectFrame frame)
+    private void ProcessCaptureCasts(
+        CaptureRuntime runtime,
+        ObjectFrame frame,
+        IReadOnlyList<NormalizedActionEffectObservation> actions)
     {
-        foreach (var cast in runtime.CastTracker.Update(frame.Casts))
-            runtime.Publish(RecordTypes.CastStarted, CreateCastPayload(cast, frame));
+        var stamp = runtime.Timeline.Observe(runtime.Context.Snapshot);
+        var resolvedActions = actions
+            .Where(action => action.CastKey is not null)
+            .Select(action => action.CastKey!.Value)
+            .ToHashSet();
+        var transitions = runtime.CastTracker.Update(
+            frame.Casts,
+            frame.PresentBattleActorIds,
+            stamp.SessionElapsedSeconds,
+            resolvedActions);
+        PublishCastTransitions(runtime, frame, stamp, transitions);
     }
 
     private CastStartedPayload CreateCastPayload(CastBegan cast, ObjectFrame frame)
@@ -430,6 +451,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
             ? null
             : frame.FindByGameObjectId(snapshot.TargetGameObjectId);
         return new(
+            cast.CastObservationId,
             metadata.ResolveAction(snapshot.ActionType, snapshot.ActionId),
             metadata.ResolveActor(sourceObject, snapshot.GameObjectId),
             snapshot.TargetGameObjectId == 0
@@ -442,12 +464,67 @@ public sealed unsafe class Plugin : IDalamudPlugin
             cast.ObservedMidCast);
     }
 
-    private void DrainRawActions(CaptureRuntime runtime, ObjectFrame frame)
+    private CastTerminalPayload CreateCastPayload(CastEnded cast, ObjectFrame frame)
     {
+        var snapshot = cast.Snapshot;
+        var sourceObject = frame.FindByGameObjectId(snapshot.GameObjectId);
+        var targetObject = snapshot.TargetGameObjectId == 0
+            ? null
+            : frame.FindByGameObjectId(snapshot.TargetGameObjectId);
+        return new(
+            cast.CastObservationId,
+            metadata.ResolveAction(snapshot.ActionType, snapshot.ActionId),
+            metadata.ResolveActor(sourceObject, snapshot.GameObjectId),
+            snapshot.TargetGameObjectId == 0
+                ? null
+                : metadata.ResolveActor(targetObject, snapshot.TargetGameObjectId),
+            cast.ObservedDurationSeconds,
+            snapshot.CurrentCastSeconds,
+            snapshot.BaseCastSeconds,
+            snapshot.TotalCastSeconds,
+            cast.ObservedMidCast,
+            cast.Reason);
+    }
+
+    private void EndTrackedCasts(CaptureRuntime runtime, string reason)
+    {
+        var stamp = runtime.Timeline.Observe(runtime.Context.Snapshot);
+        PublishCastTransitions(
+            runtime,
+            objectFrame,
+            stamp,
+            runtime.CastTracker.EndAll(stamp.SessionElapsedSeconds, reason));
+    }
+
+    private void PublishCastTransitions(
+        CaptureRuntime runtime,
+        ObjectFrame frame,
+        ObservationStamp stamp,
+        IReadOnlyList<CastTransition> transitions)
+    {
+        foreach (var transition in transitions)
+        {
+            if (transition is CastBegan began)
+                runtime.Publish(ObservedGameEvent.From(stamp, RecordTypes.CastStarted, CreateCastPayload(began, frame)));
+            else if (transition is CastEnded ended)
+                runtime.Publish(ObservedGameEvent.From(stamp, ended.RecordType, CreateCastPayload(ended, frame)));
+        }
+    }
+
+    private List<NormalizedActionEffectObservation> NormalizeRawActions(CaptureRuntime runtime, ObjectFrame frame)
+    {
+        var actions = new List<NormalizedActionEffectObservation>();
         while (rawQueue.TryDequeue(out var raw))
         {
+            if (raw!.Stamp.SessionId != runtime.Timeline.SessionId)
+                continue;
+
+            var sourceObject = frame.FindByEntityId(raw.SourceEntityId);
+            if (sourceObject is not null && !frame.IsEncounterActor(sourceObject))
+                continue;
+
             var source = metadata.ResolveActor(
-                frame.FindByEntityId(raw!.SourceEntityId),
+                sourceObject,
                 raw.SourceEntityId,
                 raw.SourceEntityId);
             var targets = raw.TargetIds
@@ -458,9 +535,23 @@ public sealed unsafe class Plugin : IDalamudPlugin
                 source,
                 raw.Header,
                 targets);
-            if (raw.Stamp.SessionId == runtime.Timeline.SessionId)
-                runtime.Publish(ObservedGameEvent.From(raw.Stamp, RecordTypes.ActionResolved, payload));
+            ResolvedCastKey? castKey = sourceObject is not null
+                ? new ResolvedCastKey(sourceObject.GameObjectId, raw.ActionType, raw.ActionId)
+                : null;
+            actions.Add(new(
+                ObservedGameEvent.From(raw.Stamp, RecordTypes.ActionResolved, payload),
+                castKey));
         }
+
+        return actions;
+    }
+
+    private static void PublishActions(
+        CaptureRuntime runtime,
+        IReadOnlyList<NormalizedActionEffectObservation> actions)
+    {
+        foreach (var action in actions)
+            runtime.Publish(action.Event);
     }
 
     private void PublishHealthIfChanged(CaptureRuntime runtime)

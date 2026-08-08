@@ -35,9 +35,14 @@ starts an observed-mid-duty session. Every `InCombat` false-to-true transition c
 combat ID with a new monotonic clock; wipes and recommences stay in the same duty session.
 
 The framework thread indexes visible objects and scans casts only during an active session. It
-indexes each actor before cast inspection, reads native cast information once, and skips only the
-cast snapshot when `GetCastInfo()` is null during transient scripted states. Newly visible casts
-already in progress are recorded with `observedMidCast=true`.
+tracks battle-actor presence separately from available cast snapshots, reads native cast
+information once, and skips only the cast snapshot when `GetCastInfo()` is null during transient
+scripted states. Newly visible casts already in progress are recorded with `observedMidCast=true`.
+Only encounter Battle NPCs are cast-scanned; known player actors and player-owned pets are excluded.
+Processed actions from known players and player-owned pets are also excluded, while unresolved
+sources remain captured because hidden encounter helpers may not be present in the object table.
+Processed actions are normalized before cast transitions in the same framework update so exact
+source and numeric action identity can provide completion evidence without delaying events.
 
 The `ActionEffectHandler.Receive` detour snapshots the already-unscrambled action identity, header,
 target IDs, and observation-time capture context into a bounded queue. It must call the original
@@ -47,8 +52,9 @@ normalized events to one background writer.
 
 ## Capture contract and privacy
 
-JSONL remains `schemaVersion: 1`. Supported record types are `session_start`, `segment_start`,
-`duty_marker`, `territory_changed`, `combat_started`, `combat_ended`, `cast_started`,
+JSONL uses `schemaVersion: 2`; version 1 output and migration are not supported. Supported record
+types are `session_start`, `segment_start`, `duty_marker`, `territory_changed`, `combat_started`,
+`combat_ended`, `cast_started`, `cast_completed`, `cast_cancelled`, `cast_interrupted`,
 `action_resolved`, `health`, `segment_end`, and `session_end`. Common fields include session ID,
 serialized sequence, observation-time UTC, monotonic session/combat seconds, combat ID, territory,
 Content Finder condition, and a camel-case payload.
@@ -59,10 +65,13 @@ Actor references may contain hexadecimal object/entity IDs, data ID, kind, class
 rotation, and reliably resolved fixed-English NPC labels. Leave a label null when safe metadata is
 unavailable. Raw eight-slot target effects remain excluded.
 
-Capture interpretation must preserve numeric `(action type, action ID)` identity, separate
-`cast_started` from `action_resolved`, account for simultaneous helper actors, and check health/drop
-records before treating an absent event as evidence. Follow `docs/capture-analysis.md` for the
-complete analysis and reporting methodology.
+Capture interpretation must preserve numeric `(action type, action ID)` identity, separate cast
+starts, cast terminals, and action resolutions, account for simultaneous helper actors, and check
+health/drop records before treating an absent event as evidence. Each cast occurrence has a
+session-local `castObservationId`. Completion requires timer or matching same-framework-frame
+resolution evidence; other observed endings are cancellations with a reason. `cast_interrupted` is
+reserved for authoritative future evidence and must not be inferred from an interruptible cast
+ending. Follow `docs/capture-analysis.md` for the complete analysis and reporting methodology.
 
 Use `Stopwatch.GetTimestamp()` or `IEventClock` for relative time. Capture event timestamps and
 combat context when observation occurs, not when a queue is drained.

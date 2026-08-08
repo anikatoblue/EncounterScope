@@ -9,6 +9,9 @@ public static class RecordTypes
     public const string CombatStarted = "combat_started";
     public const string CombatEnded = "combat_ended";
     public const string CastStarted = "cast_started";
+    public const string CastCompleted = "cast_completed";
+    public const string CastCancelled = "cast_cancelled";
+    public const string CastInterrupted = "cast_interrupted";
     public const string ActionResolved = "action_resolved";
     public const string Health = "health";
     public const string SegmentEnd = "segment_end";
@@ -39,7 +42,7 @@ public sealed record ObservedGameEvent(
     uint? ContentFinderConditionId,
     object Payload)
 {
-    public const int CurrentSchemaVersion = 1;
+    public const int CurrentSchemaVersion = 2;
 
     public static ObservedGameEvent From(ObservationStamp stamp, string recordType, object payload) =>
         new(
@@ -113,6 +116,7 @@ public sealed record TerritoryChangedPayload(uint PreviousTerritoryId, uint NewT
 public sealed record CombatBoundaryPayload(string Reason, bool ObservedMidCombat);
 
 public sealed record CastStartedPayload(
+    long CastObservationId,
     ActionReference Action,
     ActorReference Source,
     ActorReference? Target,
@@ -121,6 +125,18 @@ public sealed record CastStartedPayload(
     float TotalCastSeconds,
     bool Interruptible,
     bool ObservedMidCast);
+
+public sealed record CastTerminalPayload(
+    long CastObservationId,
+    ActionReference Action,
+    ActorReference Source,
+    ActorReference? Target,
+    double ObservedDurationSeconds,
+    float CurrentCastSeconds,
+    float BaseCastSeconds,
+    float TotalCastSeconds,
+    bool ObservedMidCast,
+    string Reason);
 
 public sealed record ActionEffectHeaderReference(
     string AnimationTargetId,

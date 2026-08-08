@@ -9,3 +9,7 @@ internal sealed record RawActionEffectObservation(
     uint ActionId,
     ActionEffectHeaderReference Header,
     IReadOnlyList<ulong> TargetIds);
+
+internal sealed record NormalizedActionEffectObservation(
+    ObservedGameEvent Event,
+    ResolvedCastKey? CastKey);

@@ -105,22 +105,73 @@ static void TestCastTracker()
 {
     var tracker = new CastTracker();
     var idle = Cast(1, false, 0, 0);
-    Assert(tracker.Update([idle]).Count == 0);
+    Assert(Update(tracker, [idle], 0).Count == 0);
 
-    var first = tracker.Update([Cast(1, true, 100, 0.1f)]);
-    Assert(first.Count == 1);
-    Assert(!first[0].ObservedMidCast);
-    Assert(tracker.Update([Cast(1, true, 100, 0.5f)]).Count == 0);
+    var first = Update(tracker, [Cast(1, true, 100, 0.1f)], 0.1);
+    var began = Single<CastBegan>(first);
+    Equal(1L, began.CastObservationId);
+    Assert(!began.ObservedMidCast);
+    Assert(Update(tracker, [Cast(1, true, 100, 1.5f)], 1.5).Count == 0);
 
-    var changed = tracker.Update([Cast(1, true, 101, 0.2f)]);
-    Assert(changed.Count == 1 && !changed[0].ObservedMidCast);
-    Assert(tracker.Update([idle]).Count == 0);
-    Assert(tracker.Update([Cast(1, true, 101, 0.2f)])[0].ObservedMidCast == false);
+    var completed = Update(tracker, [idle], 2.6);
+    var timerEnd = Single<CastEnded>(completed);
+    Equal(1L, timerEnd.CastObservationId);
+    Equal(RecordTypes.CastCompleted, timerEnd.RecordType);
+    Equal("timer_elapsed", timerEnd.Reason);
 
-    var newActorMidCast = tracker.Update([Cast(2, true, 200, 1.2f)]);
-    Assert(newActorMidCast.Count == 1 && newActorMidCast[0].ObservedMidCast);
-    tracker.Update([]);
-    Assert(tracker.Update([Cast(2, true, 200, 1.2f)])[0].ObservedMidCast);
+    var second = Single<CastBegan>(Update(tracker, [Cast(1, true, 101, 0.1f)], 3));
+    Equal(2L, second.CastObservationId);
+    var replacement = Update(tracker, [Cast(1, true, 102, 0.1f)], 3.2);
+    Equal(2, replacement.Count);
+    var replaced = (CastEnded)replacement[0];
+    var replacementStart = (CastBegan)replacement[1];
+    Equal(RecordTypes.CastCancelled, replaced.RecordType);
+    Equal("action_changed", replaced.Reason);
+    Equal(3L, replacementStart.CastObservationId);
+
+    var resolved = new HashSet<ResolvedCastKey> { new(1, 1, 102) };
+    var resolvedEnd = Single<CastEnded>(Update(tracker, [idle], 3.3, resolved));
+    Equal(RecordTypes.CastCompleted, resolvedEnd.RecordType);
+    Equal("action_resolved", resolvedEnd.Reason);
+
+    var newActorMidCast = Single<CastBegan>(Update(tracker, [Cast(2, true, 200, 1.2f)], 4));
+    Assert(newActorMidCast.ObservedMidCast);
+    Assert(Update(tracker, [], 4.1, present: new HashSet<ulong> { 2 }).Count == 0);
+    var actorLost = Single<CastEnded>(Update(tracker, [], 4.2));
+    Equal(RecordTypes.CastCancelled, actorLost.RecordType);
+    Equal("actor_lost", actorLost.Reason);
+
+    var reappeared = Single<CastBegan>(Update(tracker, [Cast(2, true, 200, 1.2f)], 5));
+    Assert(reappeared.ObservedMidCast);
+    var cleanup = Single<CastEnded>(tracker.EndAll(5.1, "wipe"));
+    Equal("wipe", cleanup.Reason);
+    Assert(tracker.EndAll(5.2, "wipe").Count == 0);
+
+    for (var i = 0; i < 10_000; i++)
+    {
+        var actor = (ulong)(1_000 + i);
+        _ = Update(tracker, [Cast(actor, true, (uint)(1_000 + i), 0)], i + 10);
+        _ = Update(tracker, [], i + 10.1);
+    }
+}
+
+static IReadOnlyList<CastTransition> Update(
+    CastTracker tracker,
+    IReadOnlyList<VisibleCastSnapshot> casts,
+    double observedAtSeconds,
+    IReadOnlySet<ResolvedCastKey>? resolved = null,
+    IReadOnlySet<ulong>? present = null) =>
+    tracker.Update(
+        casts,
+        present ?? casts.Select(cast => cast.GameObjectId).ToHashSet(),
+        observedAtSeconds,
+        resolved);
+
+static T Single<T>(IReadOnlyList<CastTransition> transitions) where T : CastTransition
+{
+    Equal(1, transitions.Count);
+    Assert(transitions[0] is T);
+    return (T)transitions[0];
 }
 
 static void TestBoundedQueue()
@@ -187,6 +238,7 @@ static void TestJsonlContract()
     Assert(writer.TryWrite(timeline.Create(
         RecordTypes.CastStarted,
         new CastStartedPayload(
+            1,
             new(1, "Action", 7, "attack"),
             playerWithoutName,
             null,
@@ -195,6 +247,21 @@ static void TestJsonlContract()
             2.5f,
             true,
             false),
+        context)));
+    clock.Advance(TimeSpan.FromSeconds(2.5));
+    Assert(writer.TryWrite(timeline.Create(
+        RecordTypes.CastCompleted,
+        new CastTerminalPayload(
+            1,
+            new(1, "Action", 7, "attack"),
+            playerWithoutName,
+            null,
+            2.5,
+            2.5f,
+            2f,
+            2.5f,
+            false,
+            "timer_elapsed"),
         context)));
     var npcSource = new ActorReference(
         "0x0000000000001000",
@@ -240,7 +307,7 @@ static void TestJsonlContract()
     foreach (var document in documents)
     {
         var root = document.RootElement;
-        Equal(1, root.GetProperty("schemaVersion").GetInt32());
+        Equal(2, root.GetProperty("schemaVersion").GetInt32());
         Assert(!string.IsNullOrWhiteSpace(root.GetProperty("recordType").GetString()));
         Equal(timeline.SessionId, root.GetProperty("sessionId").GetString());
         var sequence = root.GetProperty("sequence").GetUInt64();
@@ -264,6 +331,15 @@ static void TestJsonlContract()
     Assert(!castJson.Contains("Alice", StringComparison.Ordinal));
     Assert(!castJson.Contains("playerName", StringComparison.Ordinal));
     Equal(1.235d, cast.RootElement.GetProperty("combatElapsedSeconds").GetDouble());
+    Equal(1L, cast.RootElement.GetProperty("payload").GetProperty("castObservationId").GetInt64());
+
+    var castEnd = documents.Single(document =>
+        document.RootElement.GetProperty("recordType").GetString() == RecordTypes.CastCompleted);
+    var castEndPayload = castEnd.RootElement.GetProperty("payload");
+    Equal(1L, castEndPayload.GetProperty("castObservationId").GetInt64());
+    Equal(2.5d, castEndPayload.GetProperty("observedDurationSeconds").GetDouble());
+    Equal("timer_elapsed", castEndPayload.GetProperty("reason").GetString());
+    Assert(!castEnd.RootElement.GetRawText().Contains("playerName", StringComparison.Ordinal));
 
     var resolved = documents.Single(document =>
         document.RootElement.GetProperty("recordType").GetString() == RecordTypes.ActionResolved);

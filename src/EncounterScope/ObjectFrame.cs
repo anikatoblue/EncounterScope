@@ -1,4 +1,5 @@
 using Dalamud.Game.ClientState.Objects.Types;
+using Dalamud.Game.ClientState.Objects.Enums;
 using Dalamud.Plugin.Services;
 using EncounterScope.Core;
 using NativeBattleChara = FFXIVClientStructs.FFXIV.Client.Game.Character.BattleChara;
@@ -10,14 +11,19 @@ internal sealed unsafe class ObjectFrame
     private readonly Dictionary<ulong, IGameObject> byGameObjectId = [];
     private readonly Dictionary<uint, IGameObject> byEntityId = [];
     private readonly List<VisibleCastSnapshot> casts = [];
+    private readonly HashSet<ulong> presentBattleActorIds = [];
+    private readonly List<IBattleChara> battleActors = [];
 
     public IReadOnlyList<VisibleCastSnapshot> Casts => casts;
+    public IReadOnlySet<ulong> PresentBattleActorIds => presentBattleActorIds;
 
     public void Refresh(IObjectTable objectTable)
     {
         byGameObjectId.Clear();
         byEntityId.Clear();
         casts.Clear();
+        presentBattleActorIds.Clear();
+        battleActors.Clear();
 
         foreach (var gameObject in objectTable)
         {
@@ -28,8 +34,16 @@ internal sealed unsafe class ObjectFrame
             if (gameObject.EntityId != 0)
                 byEntityId[gameObject.EntityId] = gameObject;
 
-            if (gameObject is not IBattleChara battleChara)
+            if (gameObject is IBattleChara battleChara)
+                battleActors.Add(battleChara);
+        }
+
+        foreach (var battleChara in battleActors)
+        {
+            if (!IsEncounterActor(battleChara))
                 continue;
+
+            presentBattleActorIds.Add(battleChara.GameObjectId);
 
             var nativeBattleChara = (NativeBattleChara*)battleChara.Address;
             if (nativeBattleChara == null)
@@ -56,4 +70,13 @@ internal sealed unsafe class ObjectFrame
 
     public IGameObject? FindByGameObjectId(ulong id) => byGameObjectId.GetValueOrDefault(id);
     public IGameObject? FindByEntityId(uint id) => byEntityId.GetValueOrDefault(id);
+
+    public bool IsEncounterActor(IGameObject gameObject)
+    {
+        if (gameObject.ObjectKind != ObjectKind.BattleNpc)
+            return false;
+
+        var owner = FindByEntityId(gameObject.OwnerId);
+        return owner?.ObjectKind != ObjectKind.Pc;
+    }
 }
