@@ -49,7 +49,9 @@ their battle-character pets. They are diffed by target and status-list slot. Cou
 are suppressed; source, parameter, stack, and predicted-expiration changes are retained. Statuses
 first seen with an actor are marked `observedMidStatus`. Natural expiration is reported only within
 0.5 seconds of predicted expiry; other early removals stay conservative. Combat, wipe, territory,
-and session boundaries terminate active status occurrences.
+and session boundaries terminate active status occurrences. A visible actor can temporarily lack a
+native status manager during scripted transformations. Keep it present, skip only its status
+snapshot, and preserve its tracked statuses until snapshots resume.
 
 The `ActionEffectHandler.Receive` detour snapshots the already-unscrambled action identity, header,
 target IDs, and observation-time capture context into a bounded queue. It must call the original
@@ -126,6 +128,8 @@ privacy, rotation, recovery, retention isolation, and capacity failure. In-game 
 cover settings and commands, enablement mid-duty, casted and instant actions, multiple targets, two
 pulls and a wipe, duty completion/exit, clean unload, unavailable hook behavior, writer failure, and
 actors whose native cast info is temporarily null.
+Automated and in-game verification must also cover actors whose native status manager is
+temporarily null during scripted transformations.
 
 Before committing, verify `user.name`, `user.email`, `user.signingkey`, `gpg.format`, and
 `commit.gpgsign` from this repository as required by the parent guide. Any architectural,

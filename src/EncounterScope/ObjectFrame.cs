@@ -14,12 +14,14 @@ internal sealed unsafe class ObjectFrame
     private readonly List<VisibleStatusSnapshot> statuses = [];
     private readonly HashSet<ulong> presentBattleActorIds = [];
     private readonly HashSet<ulong> presentStatusActorIds = [];
+    private readonly HashSet<ulong> statusSnapshotActorIds = [];
     private readonly List<IBattleChara> battleActors = [];
 
     public IReadOnlyList<VisibleCastSnapshot> Casts => casts;
     public IReadOnlyList<VisibleStatusSnapshot> Statuses => statuses;
     public IReadOnlySet<ulong> PresentBattleActorIds => presentBattleActorIds;
     public IReadOnlySet<ulong> PresentStatusActorIds => presentStatusActorIds;
+    public IReadOnlySet<ulong> StatusSnapshotActorIds => statusSnapshotActorIds;
 
     public void Refresh(IObjectTable objectTable, IPartyList partyList)
     {
@@ -29,6 +31,7 @@ internal sealed unsafe class ObjectFrame
         statuses.Clear();
         presentBattleActorIds.Clear();
         presentStatusActorIds.Clear();
+        statusSnapshotActorIds.Clear();
         battleActors.Clear();
 
         var partyEntityIds = new HashSet<uint>();
@@ -53,24 +56,31 @@ internal sealed unsafe class ObjectFrame
 
         foreach (var battleChara in battleActors)
         {
+            var nativeBattleChara = (NativeBattleChara*)battleChara.Address;
             if (IsStatusActor(battleChara, partyEntityIds))
             {
                 presentStatusActorIds.Add(battleChara.GameObjectId);
-                var statusList = battleChara.StatusList;
-                for (var slot = 0; slot < statusList.Length; slot++)
+                // Scripted transformations can leave a visible BattleChara without a native
+                // status manager. Dalamud's StatusList.Length dereferences it unconditionally.
+                if (nativeBattleChara != null && nativeBattleChara->GetStatusManager() != null)
                 {
-                    var status = statusList[slot];
-                    if (status is null || status.StatusId == 0)
-                        continue;
+                    statusSnapshotActorIds.Add(battleChara.GameObjectId);
+                    var statusList = battleChara.StatusList;
+                    for (var slot = 0; slot < statusList.Length; slot++)
+                    {
+                        var status = statusList[slot];
+                        if (status is null || status.StatusId == 0)
+                            continue;
 
-                    statuses.Add(new(
-                        battleChara.GameObjectId,
-                        slot,
-                        status.StatusId,
-                        status.SourceId,
-                        status.Param,
-                        null,
-                        status.RemainingTime));
+                        statuses.Add(new(
+                            battleChara.GameObjectId,
+                            slot,
+                            status.StatusId,
+                            status.SourceId,
+                            status.Param,
+                            null,
+                            status.RemainingTime));
+                    }
                 }
             }
 
@@ -79,7 +89,6 @@ internal sealed unsafe class ObjectFrame
 
             presentBattleActorIds.Add(battleChara.GameObjectId);
 
-            var nativeBattleChara = (NativeBattleChara*)battleChara.Address;
             if (nativeBattleChara == null)
                 continue;
 

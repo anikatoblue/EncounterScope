@@ -17,6 +17,7 @@ var tests = new (string Name, Action Test)[]
     ("cast tracker handles many sequential actors", TestCastTrackerManyActors),
     ("status tracker reports lifecycle changes conservatively", TestStatusTrackerLifecycle),
     ("status tracker preserves simultaneous sources and boundaries", TestStatusTrackerSourcesAndBoundaries),
+    ("status tracker preserves state when a native snapshot is unavailable", TestUnavailableStatusSnapshot),
     ("status tracker deduplicates worst-case snapshots", TestStatusTrackerWorstCase),
     ("bounded queues drop without exceeding capacity", TestBoundedQueue),
     ("duplicate labels preserve distinct action identities", TestDuplicateActionNames),
@@ -362,6 +363,20 @@ static void TestStatusTrackerWorstCase()
     Console.WriteLine($"MEASURE status snapshots: {snapshots.Length * 1_001:N0} in {timer.Elapsed.TotalMilliseconds:N0} ms");
     Console.WriteLine($"MEASURE status initial payloads: {snapshots.Length:N0} x {payloadBytes:N0} = {snapshots.Length * payloadBytes:N0} bytes");
     Assert(timer.Elapsed < TimeSpan.FromSeconds(10));
+}
+
+static void TestUnavailableStatusSnapshot()
+{
+    var tracker = new StatusTracker();
+    var status = Status(1, 0, 400, 10, 0, 30);
+    var gained = SingleStatus<StatusGained>(tracker.Update([status], Set(1), 1));
+
+    Equal(0, tracker.Update([], Set(1), 2, new HashSet<ulong>()).Count);
+    Equal(0, tracker.Update([status with { RemainingDurationSeconds = 28 }], Set(1), 3).Count);
+
+    var removed = SingleStatus<StatusRemoved>(tracker.Update([], Set(1), 4, Set(1)));
+    Equal(gained.StatusObservationId, removed.StatusObservationId);
+    Equal("removed", removed.Reason);
 }
 
 static VisibleStatusSnapshot Status(

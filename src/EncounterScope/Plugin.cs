@@ -542,7 +542,11 @@ public sealed unsafe class Plugin : IDalamudPlugin
             runtime,
             frame,
             stamp,
-            runtime.StatusTracker.Update(snapshots, frame.PresentStatusActorIds, stamp.SessionElapsedSeconds));
+            runtime.StatusTracker.Update(
+                snapshots,
+                frame.PresentStatusActorIds,
+                stamp.SessionElapsedSeconds,
+                frame.StatusSnapshotActorIds));
     }
 
     private void EndTrackedStatuses(CaptureRuntime runtime, string reason)

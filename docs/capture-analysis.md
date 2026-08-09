@@ -253,7 +253,9 @@ Removal reasons are conservative:
 
 Status coverage is limited to encounter Battle NPCs, members exposed through Dalamud's party list,
 and their battle-character pets. An absent record is not evidence that an unloaded or excluded
-actor lacked the status.
+actor lacked the status. Scripted transformations can also temporarily suppress snapshots for one
+actor when its native status manager is unavailable; existing occurrences are preserved rather
+than falsely removed, but changes entirely inside that interval may not be observable.
 
 The synthetic worst-case test uses 64 actors with 30 statuses each for 1,001 frames. On the
 development machine, 1,921,920 snapshots were diffed in 569 ms; the 1,920 initial gains were the

@@ -57,10 +57,12 @@ public sealed class StatusTracker
     public IReadOnlyList<StatusTransition> Update(
         IReadOnlyList<VisibleStatusSnapshot> snapshots,
         IReadOnlySet<ulong> presentActorIds,
-        double observedAtSeconds)
+        double observedAtSeconds,
+        IReadOnlySet<ulong>? statusSnapshotActorIds = null)
     {
         var transitions = new List<StatusTransition>();
         var currentKeys = new HashSet<StatusKey>();
+        statusSnapshotActorIds ??= presentActorIds;
 
         foreach (var snapshot in snapshots)
         {
@@ -125,6 +127,10 @@ public sealed class StatusTracker
         foreach (var (key, previous) in active.ToArray())
         {
             if (currentKeys.Contains(key))
+                continue;
+
+            if (presentActorIds.Contains(key.TargetGameObjectId) &&
+                !statusSnapshotActorIds.Contains(key.TargetGameObjectId))
                 continue;
 
             var reason = !presentActorIds.Contains(key.TargetGameObjectId)

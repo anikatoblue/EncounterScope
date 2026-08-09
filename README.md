@@ -49,6 +49,8 @@ session-local `statusObservationId`. Ordinary duration countdown is deduplicated
 parameter/stack changes, source changes, and removals produce lifecycle records. A removal is called
 `natural_expiration` only when observed within 0.5 seconds of the predicted expiration. Early
 disappearance remains `removed`, because snapshot polling cannot prove a cleanse.
+Scripted transformations can temporarily make an actor's native status manager unavailable. The
+actor remains tracked and only that frame's status snapshot is skipped until the manager returns.
 
 ## Privacy and limitations
 
