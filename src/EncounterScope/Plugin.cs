@@ -409,7 +409,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         lastHealthNormalizedDrops = 0;
         lastHealthHookErrors = 0;
         lastHealthStatusDrops = 0;
-        Print($"Encounter logging started: {timeline.SessionId}. Files: {storage.DirectoryPath}");
+        Print($"Encounter logging started: {timeline.SessionId}.");
     }
 
     private void StopSession(string reason, string? writerFailure)
@@ -440,7 +440,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         runtime.StatusTracker.Clear();
         runtime.Writer.Complete();
         closingWriters.Add(runtime.Writer);
-        Print($"Encounter logging stopped ({reason}). Session bytes queued/written: {runtime.Writer.SessionBytes}.");
+        Print($"Encounter logging stopped ({reason}). Bytes written: {runtime.Writer.SessionBytes:N0}.");
     }
 
     private void ProcessCaptureCasts(
